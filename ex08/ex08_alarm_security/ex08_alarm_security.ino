@@ -4,90 +4,101 @@
 const char* ssid = "vi_lll";
 const char* password = "knyqsbzirkirkbh";
 #define LED_PIN 2
-const int freq = 5000;
-const int resolution = 8;
+#define TOUCH_PIN 4
+#define THRESHOLD 20
 
 WebServer server(80);
-int ledBright = 0; // 全局亮度0-255
+bool isArm = false;    // 布防状态
+bool alarmLock = false; // 报警锁定
 
-// 生成带滑动条+JS的网页
-String makeHtmlPage() {
+// 网页生成（布防/撤防双按钮）
+String makePage() {
+  String armState = isArm ? "已布防" : "未布防";
+  String alarmState = alarmLock ? "⚠️ 报警锁定中！" : "正常无警报";
   String html = R"rawliteral(
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ex07 网页无级调光</title>
+<title>ex08 安防报警主机</title>
 <style>
-body{font-family:Arial;text-align:center;margin-top:60px;}
-#slider{width:80%;height:30px;margin:30px 0;}
-#brightText{font-size:24px;color:#d32f2f;}
+body{text-align:center;font-family:Arial;margin-top:60px;}
+.btn{padding:12px 24px;font-size:18px;margin:10px;}
+.arm{background:#2e7d32;color:white;border:none;}
+.disarm{background:#c62828;color:white;border:none;}
 </style>
 </head>
 <body>
-<h1>LED无级滑动调光器</h1>
-<p>当前亮度：<span id="brightText">0</span></p>
-<input type="range" id="slider" min="0" max="255" value="0">
-
-<script>
-const slider = document.getElementById("slider");
-const text = document.getElementById("brightText");
-// 滑动条变动触发请求
-slider.addEventListener("input", async function(){
-  let val = this.value;
-  text.innerText = val;
-  // fetch发送GET请求到 /set?bright=数值
-  await fetch(`/set?bright=${val}`);
-})
-</script>
+<h1>物联网安防报警器</h1>
+<p>系统状态：<b>)rawliteral" + armState + R"rawliteral(</b></p>
+<p>警报状态：<b>)rawliteral" + alarmState + R"rawliteral(</b></p>
+<a href="/arm"><button class="btn arm">布防 Arm</button></a>
+<a href="/disarm"><button class="btn disarm">撤防 Disarm</button></a>
+<p>提示：布防后触摸引脚会触发持续报警，仅网页撤防可解除</p>
 </body>
 </html>
 )rawliteral";
   return html;
 }
 
-// 首页页面
 void handleRoot() {
-  server.send(200, "text/html; charset=UTF-8", makeHtmlPage());
+  server.send(200, "text/html; charset=UTF-8", makePage());
 }
 
-// 处理滑动条亮度请求
-void handleSetBright() {
-  if(server.hasArg("bright")){
-    ledBright = server.arg("bright").toInt();
-    // 限制范围0~255
-    if(ledBright < 0) ledBright = 0;
-    if(ledBright > 255) ledBright = 255;
-    ledcWrite(LED_PIN, ledBright);
-  }
-  // 刷新页面
+// 布防接口
+void handleArm() {
+  isArm = true;
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+// 撤防接口（清除报警锁定）
+void handleDisarm() {
+  isArm = false;
+  alarmLock = false;
+  digitalWrite(LED_PIN, LOW);
   server.sendHeader("Location", "/");
   server.send(303);
 }
 
 void setup() {
   Serial.begin(115200);
-  ledcAttach(LED_PIN, freq, resolution);
-  ledcWrite(LED_PIN, ledBright);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
 
   // WiFi连接
   WiFi.begin(ssid, password);
-  Serial.print("连接WiFi");
+  Serial.print("WiFi连接中");
   while(WiFi.status() != WL_CONNECTED){
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nWiFi连接成功");
-  Serial.print("访问地址：http://");
+  Serial.println("\n连接成功，访问IP：");
   Serial.println(WiFi.localIP());
 
-  // 注册路由
   server.on("/", handleRoot);
-  server.on("/set", handleSetBright);
+  server.on("/arm", handleArm);
+  server.on("/disarm", handleDisarm);
   server.begin();
 }
 
 void loop() {
   server.handleClient();
+
+  int touchVal = touchRead(TOUCH_PIN);
+  // 布防状态下触摸触发锁定报警
+  if(isArm && !alarmLock && touchVal < THRESHOLD){
+    alarmLock = true;
+    Serial.println("检测入侵，触发报警锁定！");
+  }
+
+  // 报警锁定时LED高频闪烁
+  if(alarmLock){
+    digitalWrite(LED_PIN, HIGH);
+    delay(80);
+    digitalWrite(LED_PIN, LOW);
+    delay(80);
+  }else{
+    digitalWrite(LED_PIN, LOW);
+  }
 }
